@@ -556,6 +556,7 @@ public class CommitLog {
                 MessageAccessor.putProperty(msg, MessageConst.PROPERTY_REAL_QUEUE_ID, String.valueOf(msg.getQueueId()));
                 msg.setPropertiesString(MessageDecoder.messageProperties2String(msg.getProperties()));
 
+                // ssssseewewew
                 msg.setTopic(topic);
                 msg.setQueueId(queueId);
             }
