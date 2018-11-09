@@ -88,6 +88,7 @@ public class ConsumeQueue {
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
         if (!mappedFiles.isEmpty()) {
 
+            // 默认从倒数第三个文件开始恢复
             int index = mappedFiles.size() - 3;
             if (index < 0)
                 index = 0;
@@ -104,12 +105,14 @@ public class ConsumeQueue {
                     int size = byteBuffer.getInt();
                     long tagsCode = byteBuffer.getLong();
 
+                    // 正确的队列信息
                     if (offset >= 0 && size > 0) {
                         mappedFileOffset = i + CQ_STORE_UNIT_SIZE;
                         this.maxPhysicOffset = offset;
                         if (isExtAddr(tagsCode)) {
                             maxExtAddr = tagsCode;
                         }
+                    // 解析错误，恢复到这个点，后续丢弃
                     } else {
                         log.info("recover current consume queue file over,  " + mappedFile.getFileName() + " "
                             + offset + " " + size + " " + tagsCode);
@@ -119,11 +122,14 @@ public class ConsumeQueue {
 
                 if (mappedFileOffset == mappedFileSizeLogics) {
                     index++;
+                    // 已到末尾，恢复成功
                     if (index >= mappedFiles.size()) {
 
                         log.info("recover last consume queue file over, last mapped file "
                             + mappedFile.getFileName());
                         break;
+
+                    // 如果整个文件都是正确的，可以完全恢复，则继续下个文件
                     } else {
                         mappedFile = mappedFiles.get(index);
                         byteBuffer = mappedFile.sliceByteBuffer();
@@ -131,6 +137,7 @@ public class ConsumeQueue {
                         mappedFileOffset = 0;
                         log.info("recover next consume queue file, " + mappedFile.getFileName());
                     }
+                // 文件未完全解析，就此结束
                 } else {
                     log.info("recover current consume queue queue over " + mappedFile.getFileName() + " "
                         + (processOffset + mappedFileOffset));
@@ -138,9 +145,11 @@ public class ConsumeQueue {
                 }
             }
 
+            // 设置最新的consumequeue offset
             processOffset += mappedFileOffset;
             this.mappedFileQueue.setFlushedWhere(processOffset);
             this.mappedFileQueue.setCommittedWhere(processOffset);
+            // 清理之后的文件
             this.mappedFileQueue.truncateDirtyFiles(processOffset);
 
             if (isExtReadEnable()) {
@@ -394,6 +403,7 @@ public class ConsumeQueue {
                         topic, queueId, request.getCommitLogOffset());
                 }
             }
+            // 插入consumequque
             boolean result = this.putMessagePositionInfo(request.getCommitLogOffset(),
                 request.getMsgSize(), tagsCode, request.getConsumeQueueOffset());
             if (result) {
@@ -447,12 +457,14 @@ public class ConsumeQueue {
             if (cqOffset != 0) {
                 long currentLogicOffset = mappedFile.getWrotePosition() + mappedFile.getFileFromOffset();
 
+                // 构建重复了
                 if (expectLogicOffset < currentLogicOffset) {
                     log.warn("Build  consume queue repeatedly, expectLogicOffset: {} currentLogicOffset: {} Topic: {} QID: {} Diff: {}",
                         expectLogicOffset, currentLogicOffset, this.topic, this.queueId, expectLogicOffset - currentLogicOffset);
                     return true;
                 }
 
+                // 刷的位置和实际位置有冲突，代码bug
                 if (expectLogicOffset != currentLogicOffset) {
                     LOG_ERROR.warn(
                         "[BUG]logic queue order maybe wrong, expectLogicOffset: {} currentLogicOffset: {} Topic: {} QID: {} Diff: {}",
