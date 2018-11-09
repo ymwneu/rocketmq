@@ -145,6 +145,8 @@ public class MappedFileQueue {
     }
 
     public boolean load() {
+
+        // list all files
         File dir = new File(this.storePath);
         File[] files = dir.listFiles();
         if (files != null) {
@@ -152,6 +154,7 @@ public class MappedFileQueue {
             Arrays.sort(files);
             for (File file : files) {
 
+                // if the file length not equals configured size, ignore it
                 if (file.length() != this.mappedFileSize) {
                     log.warn(file + "\t" + file.length()
                         + " length not matched message store config value, ignore it");
@@ -159,11 +162,15 @@ public class MappedFileQueue {
                 }
 
                 try {
+
+                    // generate a mapped file
                     MappedFile mappedFile = new MappedFile(file.getPath(), mappedFileSize);
 
                     mappedFile.setWrotePosition(this.mappedFileSize);
                     mappedFile.setFlushedPosition(this.mappedFileSize);
                     mappedFile.setCommittedPosition(this.mappedFileSize);
+
+                    // add all mappedFile to mappedFiles
                     this.mappedFiles.add(mappedFile);
                     log.info("load " + file.getPath() + " OK");
                 } catch (IOException e) {
@@ -342,6 +349,7 @@ public class MappedFileQueue {
         if (null == mfs)
             return 0;
 
+        // 至少保留最后一个文件
         int mfsLength = mfs.length - 1;
         int deleteCount = 0;
         List<MappedFile> files = new ArrayList<MappedFile>();
@@ -349,15 +357,18 @@ public class MappedFileQueue {
             for (int i = 0; i < mfsLength; i++) {
                 MappedFile mappedFile = (MappedFile) mfs[i];
                 long liveMaxTimestamp = mappedFile.getLastModifiedTimestamp() + expiredTime;
+                // 文件最终修改时间已超过设定期限，或者强制清理，则删除文件
                 if (System.currentTimeMillis() >= liveMaxTimestamp || cleanImmediately) {
                     if (mappedFile.destroy(intervalForcibly)) {
                         files.add(mappedFile);
                         deleteCount++;
 
+                        // 每次最多删除文件限制
                         if (files.size() >= DELETE_FILES_BATCH_MAX) {
                             break;
                         }
 
+                        // 删除文件时间间隔
                         if (deleteFilesInterval > 0 && (i + 1) < mfsLength) {
                             try {
                                 Thread.sleep(deleteFilesInterval);
@@ -386,15 +397,18 @@ public class MappedFileQueue {
         int deleteCount = 0;
         if (null != mfs) {
 
+            // 至少保留一个文件
             int mfsLength = mfs.length - 1;
 
             for (int i = 0; i < mfsLength; i++) {
                 boolean destroy;
                 MappedFile mappedFile = (MappedFile) mfs[i];
+                // 获取文件的最后一个数据
                 SelectMappedBufferResult result = mappedFile.selectMappedBuffer(this.mappedFileSize - unitSize);
                 if (result != null) {
                     long maxOffsetInLogicQueue = result.getByteBuffer().getLong();
                     result.release();
+                    // 如果末尾元素的物理offset比commitlog中最小offset要小，则可以删除
                     destroy = maxOffsetInLogicQueue < offset;
                     if (destroy) {
                         log.info("physic min offset " + offset + ", logics in current mappedFile max offset "

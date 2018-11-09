@@ -208,6 +208,7 @@ public class MappedFile extends ReferenceResource {
             ByteBuffer byteBuffer = writeBuffer != null ? writeBuffer.slice() : this.mappedByteBuffer.slice();
             byteBuffer.position(currentPos);
             AppendMessageResult result = null;
+            // 通过AppendMessageCallback写入消息
             if (messageExt instanceof MessageExtBrokerInner) {
                 result = cb.doAppend(this.getFileFromOffset(), byteBuffer, this.fileSize - currentPos, (MessageExtBrokerInner) messageExt);
             } else if (messageExt instanceof MessageExtBatch) {
@@ -271,8 +272,12 @@ public class MappedFile extends ReferenceResource {
      * @return The current flushed position
      */
     public int flush(final int flushLeastPages) {
+
+        // 等待指定页数数据再刷
         if (this.isAbleToFlush(flushLeastPages)) {
             if (this.hold()) {
+
+                // 刷到最新位置
                 int value = getReadPosition();
 
                 try {

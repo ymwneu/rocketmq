@@ -183,6 +183,8 @@ public class DefaultMessageStore implements MessageStore {
             result = result && this.loadConsumeQueue();
 
             if (result) {
+
+                // physicMsgTimestamp, logicsMsgTimestamp, indexMsgTimestamp
                 this.storeCheckpoint =
                     new StoreCheckpoint(StorePathConfigHelper.getStoreCheckpoint(this.messageStoreConfig.getStorePathRootDir()));
 
@@ -1243,11 +1245,13 @@ public class DefaultMessageStore implements MessageStore {
         File[] fileTopicList = dirLogic.listFiles();
         if (fileTopicList != null) {
 
+            // 遍历每个topic
             for (File fileTopic : fileTopicList) {
                 String topic = fileTopic.getName();
 
                 File[] fileQueueIdList = fileTopic.listFiles();
                 if (fileQueueIdList != null) {
+                    // 遍历每个queue
                     for (File fileQueueId : fileQueueIdList) {
                         int queueId;
                         try {
@@ -1255,13 +1259,16 @@ public class DefaultMessageStore implements MessageStore {
                         } catch (NumberFormatException e) {
                             continue;
                         }
+                        // 构建consumequeue
                         ConsumeQueue logic = new ConsumeQueue(
                             topic,
                             queueId,
                             StorePathConfigHelper.getStorePathConsumeQueue(this.messageStoreConfig.getStorePathRootDir()),
                             this.getMessageStoreConfig().getMapedFileSizeConsumeQueue(),
                             this);
+                        // 加入consumeQueueTable
                         this.putConsumeQueue(topic, queueId, logic);
+                        // load每个queue
                         if (!logic.load()) {
                             return false;
                         }
@@ -1310,6 +1317,7 @@ public class DefaultMessageStore implements MessageStore {
         long maxPhysicOffset = -1;
         for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
             for (ConsumeQueue logic : maps.values()) {
+                // 逐个逻辑队列做recover
                 logic.recover();
                 if (logic.getMaxPhysicOffset() > maxPhysicOffset) {
                     maxPhysicOffset = logic.getMaxPhysicOffset();
@@ -1476,7 +1484,9 @@ public class DefaultMessageStore implements MessageStore {
             int deletePhysicFilesInterval = DefaultMessageStore.this.getMessageStoreConfig().getDeleteCommitLogFilesInterval();
             int destroyMapedFileIntervalForcibly = DefaultMessageStore.this.getMessageStoreConfig().getDestroyMapedFileIntervalForcibly();
 
+            // 是否在指定清理的时间范围内
             boolean timeup = this.isTimeToDelete();
+            // 空间是否快满了
             boolean spacefull = this.isSpaceToDelete();
             boolean manualDelete = this.manualDeleteFileSeveralTimes > 0;
 
@@ -1485,6 +1495,7 @@ public class DefaultMessageStore implements MessageStore {
                 if (manualDelete)
                     this.manualDeleteFileSeveralTimes--;
 
+                // 是否立即强制清理
                 boolean cleanAtOnce = DefaultMessageStore.this.getMessageStoreConfig().isCleanFileForciblyEnable() && this.cleanImmediately;
 
                 log.info("begin to delete before {} hours file. timeup: {} spacefull: {} manualDeleteFileSeveralTimes: {} cleanAtOnce: {}",
@@ -1538,7 +1549,9 @@ public class DefaultMessageStore implements MessageStore {
 
             {
                 String storePathPhysic = DefaultMessageStore.this.getMessageStoreConfig().getStorePathCommitLog();
+                // commitlog所在分区空间使用率
                 double physicRatio = UtilAll.getDiskPartitionSpaceUsedPercent(storePathPhysic);
+                // 默认空间使用率大于90%，开始禁写
                 if (physicRatio > diskSpaceWarningLevelRatio) {
                     boolean diskok = DefaultMessageStore.this.runningFlags.getAndMakeDiskFull();
                     if (diskok) {
@@ -1546,6 +1559,8 @@ public class DefaultMessageStore implements MessageStore {
                     }
 
                     cleanImmediately = true;
+
+                // 空间使用率达到85%，也需要马上清理，但是还能继续写
                 } else if (physicRatio > diskSpaceCleanForciblyRatio) {
                     cleanImmediately = true;
                 } else {
@@ -1613,6 +1628,7 @@ public class DefaultMessageStore implements MessageStore {
         private void deleteExpiredFiles() {
             int deleteLogicsFilesInterval = DefaultMessageStore.this.getMessageStoreConfig().getDeleteConsumeQueueFilesInterval();
 
+            // 先清理的commitlog，所以获取commitlog中最小的offset，清理掉之前的数据
             long minOffset = DefaultMessageStore.this.commitLog.getMinOffset();
             if (minOffset > this.lastPhysicalMinOffset) {
                 this.lastPhysicalMinOffset = minOffset;
@@ -1621,6 +1637,7 @@ public class DefaultMessageStore implements MessageStore {
 
                 for (ConcurrentMap<Integer, ConsumeQueue> maps : tables.values()) {
                     for (ConsumeQueue logic : maps.values()) {
+                        // 根据最小的offset，清理consumequeue
                         int deleteCount = logic.deleteExpiredFile(minOffset);
 
                         if (deleteCount > 0 && deleteLogicsFilesInterval > 0) {
@@ -1632,6 +1649,7 @@ public class DefaultMessageStore implements MessageStore {
                     }
                 }
 
+                // 清理索引文件
                 DefaultMessageStore.this.indexService.deleteExpiredFile(minOffset);
             }
         }
@@ -1755,20 +1773,25 @@ public class DefaultMessageStore implements MessageStore {
                     break;
                 }
 
+                // 根据指定的reputFromOffset，从commitlog中获取之后的buffer
                 SelectMappedBufferResult result = DefaultMessageStore.this.commitLog.getData(reputFromOffset);
                 if (result != null) {
                     try {
                         this.reputFromOffset = result.getStartOffset();
 
                         for (int readSize = 0; readSize < result.getSize() && doNext; ) {
+
+                            // 解析一条message
                             DispatchRequest dispatchRequest =
                                 DefaultMessageStore.this.commitLog.checkMessageAndReturnSize(result.getByteBuffer(), false, false);
                             int size = dispatchRequest.getMsgSize();
 
                             if (dispatchRequest.isSuccess()) {
                                 if (size > 0) {
+                                    // 根据message构建consumequeue
                                     DefaultMessageStore.this.doDispatch(dispatchRequest);
 
+                                    // 长轮训，则通知消息到达
                                     if (BrokerRole.SLAVE != DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole()
                                         && DefaultMessageStore.this.brokerConfig.isLongPollingEnable()) {
                                         DefaultMessageStore.this.messageArrivingListener.arriving(dispatchRequest.getTopic(),
@@ -1787,6 +1810,7 @@ public class DefaultMessageStore implements MessageStore {
                                             .addAndGet(dispatchRequest.getMsgSize());
                                     }
                                 } else if (size == 0) {
+                                    // 读取下一个文件
                                     this.reputFromOffset = DefaultMessageStore.this.commitLog.rollNextFile(this.reputFromOffset);
                                     readSize = result.getSize();
                                 }

@@ -96,6 +96,7 @@ public class IndexService {
             }
 
             long endPhyOffset = this.indexFileList.get(0).getEndPhyOffset();
+            // 判断第一个文件是否可以删除
             if (endPhyOffset < offset) {
                 files = this.indexFileList.toArray();
             }
@@ -163,6 +164,7 @@ public class IndexService {
         try {
             this.readWriteLock.readLock().lock();
             if (!this.indexFileList.isEmpty()) {
+                // 从最后个文件开始往前查
                 for (int i = this.indexFileList.size(); i > 0; i--) {
                     IndexFile f = this.indexFileList.get(i - 1);
                     boolean lastFile = i == this.indexFileList.size();
@@ -171,6 +173,7 @@ public class IndexService {
                         indexLastUpdatePhyoffset = f.getEndPhyOffset();
                     }
 
+                    // 是否在时间范围内
                     if (f.isTimeMatched(begin, end)) {
 
                         f.selectPhyOffset(phyOffsets, buildKey(topic, key), maxNum, begin, end, lastFile);
@@ -199,6 +202,8 @@ public class IndexService {
     }
 
     public void buildIndex(DispatchRequest req) {
+
+        // 获取最后一个索引文件，如果最后个文件已满，则新建一个
         IndexFile indexFile = retryGetAndCreateIndexFile();
         if (indexFile != null) {
             long endPhyOffset = indexFile.getEndPhyOffset();
@@ -220,6 +225,7 @@ public class IndexService {
             }
 
             if (req.getUniqKey() != null) {
+                // 根据uniqkey构建索引
                 indexFile = putKey(indexFile, msg, buildKey(topic, req.getUniqKey()));
                 if (indexFile == null) {
                     log.error("putKey error commitlog {} uniqkey {}", req.getCommitLogOffset(), req.getUniqKey());
@@ -232,6 +238,7 @@ public class IndexService {
                 for (int i = 0; i < keyset.length; i++) {
                     String key = keyset[i];
                     if (key.length() > 0) {
+                        // 根据key构建索引
                         indexFile = putKey(indexFile, msg, buildKey(topic, key));
                         if (indexFile == null) {
                             log.error("putKey error commitlog {} uniqkey {}", req.getCommitLogOffset(), req.getUniqKey());
