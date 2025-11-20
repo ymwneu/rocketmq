@@ -17,6 +17,7 @@
 package org.apache.rocketmq.store.timer;
 
 import com.conversantmedia.util.concurrent.DisruptorBlockingQueue;
+import io.opentelemetry.api.common.Attributes;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -40,7 +41,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
-import io.opentelemetry.api.common.Attributes;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.rocketmq.common.ServiceThread;
@@ -61,12 +61,14 @@ import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.store.DefaultMessageStore;
 import org.apache.rocketmq.store.MessageStore;
 import org.apache.rocketmq.store.PutMessageResult;
+import org.apache.rocketmq.store.RunningFlags;
 import org.apache.rocketmq.store.SelectMappedBufferResult;
 import org.apache.rocketmq.store.config.BrokerRole;
 import org.apache.rocketmq.store.config.MessageStoreConfig;
 import org.apache.rocketmq.store.logfile.MappedFile;
 import org.apache.rocketmq.store.metrics.DefaultStoreMetricsConstant;
 import org.apache.rocketmq.store.metrics.DefaultStoreMetricsManager;
+import org.apache.rocketmq.store.metrics.StoreMetricsManager;
 import org.apache.rocketmq.store.queue.ConsumeQueueInterface;
 import org.apache.rocketmq.store.queue.CqUnit;
 import org.apache.rocketmq.store.queue.ReferredIterator;
@@ -159,6 +161,8 @@ public class TimerMessageStore {
     private final BrokerStatsManager brokerStatsManager;
     private Function<MessageExtBrokerInner, PutMessageResult> escapeBridgeHook;
 
+    private final Object lockWhenFlush = new Object();
+
     public TimerMessageStore(final MessageStore messageStore, final MessageStoreConfig storeConfig,
         TimerCheckpoint timerCheckpoint, TimerMetrics timerMetrics,
         final BrokerStatsManager brokerStatsManager) throws IOException {
@@ -171,9 +175,29 @@ public class TimerMessageStore {
 
         // TimerWheel contains the fixed number of slots regardless of precision.
         this.slotsTotal = TIMER_WHEEL_TTL_DAY * DAY_SECS;
+
+        String timerWheelPath = getTimerWheelPath(storeConfig.getStorePathRootDir());
+        long snapOffset = -1;
+        if (storeConfig.isTimerWheelSnapshotFlush()) {
+            snapOffset = TimerWheel.getMaxSnapshotFlag(timerWheelPath);
+            if (snapOffset > 0) {
+                // correct recover offset
+                timerCheckpoint.setLastTimerLogFlushPos(snapOffset);
+                LOGGER.info("found timerWheel snapshot offset {}", snapOffset);
+            } else {
+                LOGGER.info("not found timerWheel snapshot", snapOffset);
+            }
+        }
+
+        RunningFlags runningFlags = null;
+        if (storeConfig.isEnableRunningFlagsInFlush() && messageStore != null) {
+            runningFlags = messageStore.getRunningFlags();
+        }
+
         this.timerWheel = new TimerWheel(
-            getTimerWheelPath(storeConfig.getStorePathRootDir()), this.slotsTotal, precisionMs);
-        this.timerLog = new TimerLog(getTimerLogPath(storeConfig.getStorePathRootDir()), timerLogFileSize);
+            timerWheelPath, this.slotsTotal, precisionMs, snapOffset);
+        this.timerLog = new TimerLog(getTimerLogPath(storeConfig.getStorePathRootDir()), timerLogFileSize,
+            runningFlags, storeConfig.isWriteWithoutMmap());
         this.timerMetrics = timerMetrics;
         this.timerCheckpoint = timerCheckpoint;
         this.lastBrokerRole = storeConfig.getBrokerRole();
@@ -529,31 +553,91 @@ public class TimerMessageStore {
             return;
         }
         state = SHUTDOWN;
+
+        if (this.scheduler != null) {
+            List<Runnable> remainingTasks = this.scheduler.shutdownNow();
+            if (!remainingTasks.isEmpty()) {
+                LOGGER.info("Timer scheduler shutdown interrupted {} tasks", remainingTasks.size());
+            }
+
+            try {
+                if (!this.scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
+                    LOGGER.warn("Timer scheduler did not terminate gracefully");
+                }
+            } catch (InterruptedException e) {
+                LOGGER.warn("Interrupted while waiting for scheduler termination", e);
+            }
+        }
+
         //first save checkpoint
-        prepareTimerCheckPoint();
-        timerFlushService.shutdown();
-        timerLog.shutdown();
-        timerCheckpoint.shutdown();
-
-        enqueuePutQueue.clear(); //avoid blocking
-        dequeueGetQueue.clear(); //avoid blocking
-        dequeuePutQueue.clear(); //avoid blocking
-
-        enqueueGetService.shutdown();
-        enqueuePutService.shutdown();
-        dequeueWarmService.shutdown();
-        dequeueGetService.shutdown();
-        for (int i = 0; i < dequeueGetMessageServices.length; i++) {
-            dequeueGetMessageServices[i].shutdown();
+        if (timerCheckpoint != null) {
+            prepareTimerCheckPoint();
         }
-        for (int i = 0; i < dequeuePutMessageServices.length; i++) {
-            dequeuePutMessageServices[i].shutdown();
-        }
-        timerWheel.shutdown(false);
 
-        this.scheduler.shutdown();
-        UtilAll.cleanBuffer(this.bufferLocal.get());
-        this.bufferLocal.remove();
+        if (timerFlushService != null) {
+            timerFlushService.shutdown();
+        }
+
+        if (timerCheckpoint != null) {
+            timerCheckpoint.shutdown();
+        }
+
+        if (enqueuePutQueue != null) {
+            enqueuePutQueue.clear(); //avoid blocking
+        }
+
+        if (dequeueGetQueue != null) {
+            dequeueGetQueue.clear(); //avoid blocking
+        }
+
+        if (dequeuePutQueue != null) {
+            dequeuePutQueue.clear(); //avoid blocking
+        }
+
+        if (enqueueGetService != null) {
+            enqueueGetService.shutdown();
+        }
+
+        if (enqueuePutService != null) {
+            enqueuePutService.shutdown();
+        }
+
+        if (dequeueWarmService != null) {
+            dequeueWarmService.shutdown();
+        }
+
+        if (dequeueGetService != null) {
+            dequeueGetService.shutdown();
+        }
+
+        if (dequeueGetMessageServices != null) {
+            for (TimerDequeueGetMessageService dequeueGetMessageServices : dequeueGetMessageServices) {
+                if (dequeueGetMessageServices != null) {
+                    dequeueGetMessageServices.shutdown();
+                }
+            }
+        }
+
+        if (dequeuePutMessageServices != null) {
+            for (TimerDequeuePutMessageService dequeuePutMessageServices : dequeuePutMessageServices) {
+                if (dequeuePutMessageServices != null) {
+                    dequeuePutMessageServices.shutdown();
+                }
+            }
+        }
+
+        if (timerWheel != null) {
+            timerWheel.shutdown(false);
+        }
+
+        if (timerLog != null) {
+            timerLog.shutdown();
+        }
+
+        if (this.bufferLocal != null) {
+            UtilAll.cleanBuffer(this.bufferLocal.get());
+            this.bufferLocal.remove();
+        }
     }
 
     protected void maybeMoveWriteTime() {
@@ -581,7 +665,11 @@ public class TimerMessageStore {
                     currQueueOffset = Math.min(currQueueOffset, timerCheckpoint.getMasterTimerQueueOffset());
                     commitQueueOffset = currQueueOffset;
                     prepareTimerCheckPoint();
-                    timerCheckpoint.flush();
+                    try {
+                        timerCheckpoint.flush();
+                    } catch (Throwable e) {
+                        LOGGER.error("Error in flush timerCheckpoint", e);
+                    }
                     currReadTimeMs = timerCheckpoint.getLastReadTimeMs();
                     commitReadTimeMs = currReadTimeMs;
                 }
@@ -701,9 +789,14 @@ public class TimerMessageStore {
                                 return false;
                             }
                         }
-                        Attributes attributes = DefaultStoreMetricsManager.newAttributesBuilder()
+                        // Record timer message set latency
+                        StoreMetricsManager metricsManager = messageStore.getStoreMetricsManager();
+                        if (metricsManager instanceof DefaultStoreMetricsManager) {
+                            DefaultStoreMetricsManager defaultMetricsManager = (DefaultStoreMetricsManager) metricsManager;
+                            Attributes attributes = defaultMetricsManager.newAttributesBuilder()
                                 .put(DefaultStoreMetricsConstant.LABEL_TOPIC, msgExt.getProperty(MessageConst.PROPERTY_REAL_TOPIC)).build();
-                        DefaultStoreMetricsManager.timerMessageSetLatency.record((delayedTime - msgExt.getBornTimestamp()) / 1000, attributes);
+                            defaultMetricsManager.getTimerMessageSetLatency().record((delayedTime - msgExt.getBornTimestamp()) / 1000, attributes);
+                        }
                     }
                 } catch (Exception e) {
                     // here may cause the message loss
@@ -884,6 +977,11 @@ public class TimerMessageStore {
         }
         int checkNum = 0;
         while (true) {
+            if (!isRunningDequeue()) {
+                LOGGER.info("Not Running dequeue, skip checkDequeueLatch for delayedTime:{}", delayedTime);
+                break;
+            }
+
             if (dequeuePutQueue.size() > 0
                 || !checkStateForGetMessages(AbstractStateService.WAITING)
                 || !checkStateForPutMessages(AbstractStateService.WAITING)) {
@@ -1366,7 +1464,10 @@ public class TimerMessageStore {
         protected void putMessageToTimerWheel(TimerRequest req) {
             try {
                 perfCounterTicks.startTick(ENQUEUE_PUT);
-                DefaultStoreMetricsManager.incTimerEnqueueCount(getRealTopic(req.getMsg()));
+                StoreMetricsManager metricsManager = messageStore.getStoreMetricsManager();
+                if (metricsManager instanceof DefaultStoreMetricsManager) {
+                    ((DefaultStoreMetricsManager) metricsManager).incTimerEnqueueCount(getRealTopic(req.getMsg()));
+                }
                 if (shouldRunningDequeue && req.getDelayTime() < currWriteTimeMs) {
                     req.setEnqueueTime(Long.MAX_VALUE);
                     dequeuePutQueue.put(req);
@@ -1399,7 +1500,13 @@ public class TimerMessageStore {
                 CountDownLatch latch = new CountDownLatch(trs.size());
                 for (TimerRequest req : trs) {
                     req.setLatch(latch);
-                    this.putMessageToTimerWheel(req);
+                    if (storeConfig.isTimerWheelSnapshotFlush()) {
+                        synchronized (lockWhenFlush) {
+                            this.putMessageToTimerWheel(req);
+                        }
+                    } else {
+                        this.putMessageToTimerWheel(req);
+                    }
                 }
                 checkDequeueLatch(latch, -1);
                 boolean allSuccess = trs.stream().allMatch(TimerRequest::isSucc);
@@ -1471,7 +1578,18 @@ public class TimerMessageStore {
     public class TimerDequeuePutMessageService extends AbstractStateService {
         @Override
         public String getServiceName() {
-            return getServiceThreadName() + this.getClass().getSimpleName();
+            String brokerIdentifier = "";
+            if (TimerMessageStore.this.messageStore instanceof DefaultMessageStore) {
+                try {
+                    DefaultMessageStore defaultStore = (DefaultMessageStore) TimerMessageStore.this.messageStore;
+                    if (defaultStore.getBrokerConfig().isInBrokerContainer()) {
+                        brokerIdentifier = defaultStore.getBrokerConfig().getIdentifier();
+                    }
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to get broker identifier", e);
+                }
+            }
+            return brokerIdentifier + this.getClass().getSimpleName();
         }
 
         @Override
@@ -1502,7 +1620,10 @@ public class TimerMessageStore {
                                 perfCounterTicks.startTick(DEQUEUE_PUT);
 
                                 MessageExt msgExt = tr.getMsg();
-                                DefaultStoreMetricsManager.incTimerDequeueCount(getRealTopic(msgExt));
+                                StoreMetricsManager metricsManager = messageStore.getStoreMetricsManager();
+                                if (metricsManager instanceof DefaultStoreMetricsManager) {
+                                    ((DefaultStoreMetricsManager) metricsManager).incTimerDequeueCount(getRealTopic(msgExt));
+                                }
 
                                 if (tr.getEnqueueTime() == Long.MAX_VALUE) {
                                     // Never enqueue, mark it.
@@ -1573,7 +1694,7 @@ public class TimerMessageStore {
             TimerMessageStore.LOGGER.info(this.getServiceName() + " service start");
             //Mark different rounds
             boolean isRound = true;
-            Map<String ,MessageExt> avoidDeleteLose = new HashMap<>();
+            Map<String, MessageExt> avoidDeleteLose = new HashMap<>();
             while (!this.isStopped()) {
                 try {
                     setState(AbstractStateService.WAITING);
@@ -1594,7 +1715,7 @@ public class TimerMessageStore {
                                     //The deletion message is received first and the common message is received once
                                     if (!isRound) {
                                         isRound = true;
-                                        for (MessageExt messageExt: avoidDeleteLose.values()) {
+                                        for (MessageExt messageExt : avoidDeleteLose.values()) {
                                             addMetric(messageExt, 1);
                                         }
                                         avoidDeleteLose.clear();
@@ -1697,7 +1818,8 @@ public class TimerMessageStore {
     public class TimerFlushService extends ServiceThread {
         private final SimpleDateFormat sdf = new SimpleDateFormat("MM-dd HH:mm:ss");
 
-        @Override public String getServiceName() {
+        @Override
+        public String getServiceName() {
             String brokerIdentifier = "";
             if (TimerMessageStore.this.messageStore instanceof DefaultMessageStore && ((DefaultMessageStore) TimerMessageStore.this.messageStore).getBrokerConfig().isInBrokerContainer()) {
                 brokerIdentifier = ((DefaultMessageStore) TimerMessageStore.this.messageStore).getBrokerConfig().getIdentifier();
@@ -1712,32 +1834,54 @@ public class TimerMessageStore {
         @Override
         public void run() {
             TimerMessageStore.LOGGER.info(this.getServiceName() + " service start");
-            long start = System.currentTimeMillis();
             while (!this.isStopped()) {
                 try {
-                    prepareTimerCheckPoint();
-                    timerLog.getMappedFileQueue().flush(0);
-                    timerWheel.flush();
-                    timerCheckpoint.flush();
-                    if (System.currentTimeMillis() - start > storeConfig.getTimerProgressLogIntervalMs()) {
-                        start = System.currentTimeMillis();
-                        long tmpQueueOffset = currQueueOffset;
-                        ConsumeQueueInterface cq = messageStore.getConsumeQueue(TIMER_TOPIC, 0);
-                        long maxOffsetInQueue = cq == null ? 0 : cq.getMaxOffsetInQueue();
-                        TimerMessageStore.LOGGER.info("[{}]Timer progress-check commitRead:[{}] currRead:[{}] currWrite:[{}] readBehind:{} currReadOffset:{} offsetBehind:{} behindMaster:{} " +
-                                "enqPutQueue:{} deqGetQueue:{} deqPutQueue:{} allCongestNum:{} enqExpiredStoreTime:{}",
-                            storeConfig.getBrokerRole(),
-                            format(commitReadTimeMs), format(currReadTimeMs), format(currWriteTimeMs), getDequeueBehind(),
-                            tmpQueueOffset, maxOffsetInQueue - tmpQueueOffset, timerCheckpoint.getMasterTimerQueueOffset() - tmpQueueOffset,
-                            enqueuePutQueue.size(), dequeueGetQueue.size(), dequeuePutQueue.size(), getAllCongestNum(), format(lastEnqueueButExpiredStoreTime));
-                    }
-                    timerMetrics.persist();
-                    waitForRunning(storeConfig.getTimerFlushIntervalMs());
+                    this.flush();
                 } catch (Throwable e) {
                     TimerMessageStore.LOGGER.error("Error occurred in " + getServiceName(), e);
                 }
+                try {
+                    waitForRunning(storeConfig.getTimerFlushIntervalMs());
+                } catch (Throwable e) {
+                    // ignore interrupt
+                }
             }
             TimerMessageStore.LOGGER.info(this.getServiceName() + " service end");
+        }
+
+        long start = System.currentTimeMillis();
+        long lastSnapshotTime = System.currentTimeMillis();
+
+        public void flush() throws IOException {
+            if (storeConfig.isTimerWheelSnapshotFlush()) {
+                synchronized (lockWhenFlush) {
+                    prepareTimerCheckPoint();
+                    timerLog.getMappedFileQueue().flush(0);
+                    if (System.currentTimeMillis() - lastSnapshotTime > storeConfig.getTimerWheelSnapshotIntervalMs()) {
+                        lastSnapshotTime = System.currentTimeMillis();
+                        timerWheel.backup(timerLog.getMappedFileQueue().getFlushedWhere());
+                    }
+                    timerCheckpoint.flush();
+                }
+            } else {
+                prepareTimerCheckPoint();
+                timerLog.getMappedFileQueue().flush(0);
+                timerWheel.flush();
+                timerCheckpoint.flush();
+            }
+            if (System.currentTimeMillis() - start > storeConfig.getTimerProgressLogIntervalMs()) {
+                start = System.currentTimeMillis();
+                long tmpQueueOffset = currQueueOffset;
+                ConsumeQueueInterface cq = messageStore.getConsumeQueue(TIMER_TOPIC, 0);
+                long maxOffsetInQueue = cq == null ? 0 : cq.getMaxOffsetInQueue();
+                TimerMessageStore.LOGGER.info("[{}]Timer progress-check commitRead:[{}] currRead:[{}] currWrite:[{}] readBehind:{} currReadOffset:{} offsetBehind:{} behindMaster:{} " +
+                        "enqPutQueue:{} deqGetQueue:{} deqPutQueue:{} allCongestNum:{} enqExpiredStoreTime:{}",
+                    storeConfig.getBrokerRole(),
+                    format(commitReadTimeMs), format(currReadTimeMs), format(currWriteTimeMs), getDequeueBehind(),
+                    tmpQueueOffset, maxOffsetInQueue - tmpQueueOffset, timerCheckpoint.getMasterTimerQueueOffset() - tmpQueueOffset,
+                    enqueuePutQueue.size(), dequeueGetQueue.size(), dequeuePutQueue.size(), getAllCongestNum(), format(lastEnqueueButExpiredStoreTime));
+            }
+            timerMetrics.persist();
         }
     }
 
@@ -1807,7 +1951,7 @@ public class TimerMessageStore {
         if (shouldRunningDequeue) {
             timerCheckpoint.setMasterTimerQueueOffset(commitQueueOffset);
             if (commitReadTimeMs != lastCommitReadTimeMs || commitQueueOffset != lastCommitQueueOffset) {
-                timerCheckpoint.updateDateVersion(messageStore.getStateMachineVersion());
+                timerCheckpoint.updateDataVersion(messageStore.getStateMachineVersion());
                 lastCommitReadTimeMs = commitReadTimeMs;
                 lastCommitQueueOffset = commitQueueOffset;
             }
@@ -1929,5 +2073,9 @@ public class TimerMessageStore {
     // identify a message by topic + uk, like query operation
     public static String buildDeleteKey(String realTopic, String uniqueKey) {
         return realTopic + "+" + uniqueKey;
+    }
+
+    public TimerFlushService getTimerFlushService() {
+        return timerFlushService;
     }
 }

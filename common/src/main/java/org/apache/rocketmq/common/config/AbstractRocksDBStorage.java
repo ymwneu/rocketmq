@@ -18,6 +18,7 @@ package org.apache.rocketmq.common.config;
 
 import com.google.common.collect.Maps;
 import io.netty.buffer.PooledByteBufAllocator;
+import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -487,10 +488,16 @@ public abstract class AbstractRocksDBStorage {
                 return true;
             }
 
+            manualCompactionThread.shutdownNow();
+
+            manualCompactionThread.awaitTermination(30, TimeUnit.SECONDS);
+
             final FlushOptions flushOptions = new FlushOptions();
             flushOptions.setWaitForFlush(true);
             try {
                 flush(flushOptions);
+            } catch (Throwable e) {
+                LOGGER.error("flush rocksdb wal failed when shutdown", e);
             } finally {
                 flushOptions.close();
             }
@@ -500,7 +507,9 @@ public abstract class AbstractRocksDBStorage {
             //1. close column family handles
             preShutdown();
 
-            this.defaultCFHandle.close();
+            if (this.defaultCFHandle.isOwningHandle()) {
+                this.defaultCFHandle.close();
+            }
 
             //2. close column family options.
             for (final ColumnFamilyOptions opt : this.cfOptions) {
@@ -521,10 +530,22 @@ public abstract class AbstractRocksDBStorage {
             }
             //4. close db.
             if (db != null && !this.readOnly) {
-                this.db.syncWal();
+                try {
+                    this.db.syncWal();
+                } catch (Throwable e) {
+                    LOGGER.error("rocksdb sync wal failed when shutdown", e);
+                } finally {
+                    flushOptions.close();
+                }
+
             }
             if (db != null) {
-                this.db.closeE();
+                try {
+                    this.db.closeE();
+                } catch (Throwable e) {
+                    LOGGER.error("rocksdb db closeE failed when shutdown", e);
+                }
+
             }
             // Close DBOptions after RocksDB instance is closed.
             if (this.options != null) {
@@ -691,6 +712,24 @@ public abstract class AbstractRocksDBStorage {
             }
             map.forEach((key, value) -> logger.info("level: {}\n{}", key, value.toString()));
         } catch (Exception ignored) {
+        }
+    }
+
+    public void destroy() {
+        recursiveDelete(new File(dbPath));
+    }
+
+    void recursiveDelete(File file) {
+        if (file.isFile()) {
+            if (file.delete()) {
+                LOGGER.info("Delete rocksdb file={}", file.getAbsolutePath());
+            }
+        } else {
+            File[] files = file.listFiles();
+            for (File f : files) {
+                recursiveDelete(f);
+            }
+            file.delete();
         }
     }
 }

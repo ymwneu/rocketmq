@@ -214,6 +214,8 @@ public class BrokerConfig extends BrokerIdentity {
 
     private int popPollingSize = 1024;
     private int popPollingMapSize = 100000;
+
+    private int popPollingMapExpireTimeSeconds = 60 * 10;
     // 20w cost 200M heap memory.
     private long maxPopPollingSize = 100000;
     private int reviveQueueNum = 8;
@@ -469,6 +471,12 @@ public class BrokerConfig extends BrokerIdentity {
      */
     private String configManagerVersion = ConfigManagerVersion.V1.getVersion();
 
+    /**
+     * Whether to use a single RocksDB instance with multiple column families for all configs
+     * instead of separate RocksDB instances for Topic, Group, and Offset configs
+     */
+    private boolean useSingleRocksDBForAllConfigs = false;
+
     private boolean allowRecallWhenBrokerNotWriteable = true;
 
     private boolean recallMessageEnable = false;
@@ -531,6 +539,14 @@ public class BrokerConfig extends BrokerIdentity {
 
     public void setPopPollingMapSize(int popPollingMapSize) {
         this.popPollingMapSize = popPollingMapSize;
+    }
+
+    public int getPopPollingMapExpireTimeSeconds() {
+        return popPollingMapExpireTimeSeconds;
+    }
+
+    public void setPopPollingMapExpireTimeSeconds(int popPollingMapExpireTimeSeconds) {
+        this.popPollingMapExpireTimeSeconds = popPollingMapExpireTimeSeconds;
     }
 
     public long getReviveScanTime() {
@@ -2104,6 +2120,14 @@ public class BrokerConfig extends BrokerIdentity {
 
     public void setConfigManagerVersion(String configManagerVersion) {
         this.configManagerVersion = configManagerVersion;
+    }
+
+    public boolean isUseSingleRocksDBForAllConfigs() {
+        return useSingleRocksDBForAllConfigs;
+    }
+
+    public void setUseSingleRocksDBForAllConfigs(boolean useSingleRocksDBForAllConfigs) {
+        this.useSingleRocksDBForAllConfigs = useSingleRocksDBForAllConfigs;
     }
 
     public boolean isAllowRecallWhenBrokerNotWriteable() {

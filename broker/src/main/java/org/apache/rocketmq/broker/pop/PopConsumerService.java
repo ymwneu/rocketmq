@@ -199,8 +199,14 @@ public class PopConsumerService extends ServiceThread {
         return context;
     }
 
-    public long getPopOffset(String groupId, String topicId, int queueId, int initMode) {
-        long offset = this.brokerController.getConsumerOffsetManager().queryPullOffset(groupId, topicId, queueId);
+    public long getPopOffset(String groupId, String topicId, int queueId, int initMode, boolean fifo) {
+
+        // For FIFO messages, the pull offset is not used.
+        // This preserves compatibility when switching from pull consumer to pop consumer.
+        long offset = fifo ?
+            this.brokerController.getConsumerOffsetManager().queryOffset(groupId, topicId, queueId) :
+            this.brokerController.getConsumerOffsetManager().queryPullOffset(groupId, topicId, queueId);
+
         if (offset < 0L) {
             try {
                 offset = this.brokerController.getPopMessageProcessor()
@@ -309,7 +315,7 @@ public class PopConsumerService extends ServiceThread {
                 result.addRestCount(this.getPendingFilterCount(groupId, topicId, queueId));
                 return CompletableFuture.completedFuture(result);
             } else {
-                final long consumeOffset = this.getPopOffset(groupId, topicId, queueId, result.getInitMode());
+                final long consumeOffset = this.getPopOffset(groupId, topicId, queueId, result.getInitMode(), result.isFifo());
                 return getMessageAsync(clientHost, groupId, topicId, queueId, consumeOffset, remain, filter)
                     .thenApply(getMessageResult -> handleGetMessageResult(
                         result, getMessageResult, topicId, queueId, retryType, consumeOffset));
@@ -618,6 +624,7 @@ public class PopConsumerService extends ServiceThread {
             msgInner.getProperties().get(MessageConst.PROPERTY_FIRST_POP_TIME) == null) {
             msgInner.getProperties().put(MessageConst.PROPERTY_FIRST_POP_TIME, String.valueOf(record.getPopTime()));
         }
+        msgInner.getProperties().put(MessageConst.PROPERTY_ORIGIN_GROUP, record.getGroupId());
         msgInner.setPropertiesString(MessageDecoder.messageProperties2String(msgInner.getProperties()));
 
         PutMessageResult putMessageResult =

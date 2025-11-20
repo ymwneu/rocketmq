@@ -81,6 +81,7 @@ public class MessageStoreConfig {
     private boolean timerEnableCheckMetrics = true;
     private boolean timerInterceptDelayLevel = false;
     private int timerMaxDelaySec = 3600 * 24 * 3;
+    private boolean timerWheelSnapshotFlush = false;
     private boolean timerWheelEnable = true;
 
     /**
@@ -104,6 +105,7 @@ public class MessageStoreConfig {
 
     private int timerMetricSmallThreshold = 1000000;
     private int timerProgressLogIntervalMs = 10 * 1000;
+    private int timerWheelSnapshotIntervalMs = 10 * 1000;
 
     // default, defaultRocksDB
     @ImportantField
@@ -239,6 +241,16 @@ public class MessageStoreConfig {
     private int transientStorePoolSize = 5;
     private boolean fastFailIfNoBufferInStorePool = false;
 
+    /**
+     * When true, use RandomAccessFile for writing instead of MappedByteBuffer. This can be useful for certain scenarios
+     * where mmap is not desired.
+     *
+     * The configurations writeWithoutMmap and transientStorePoolEnable are mutually exclusive. When both are set to
+     * true, only writeWithoutMmap will be effective.
+     */
+    @ImportantField
+    private boolean writeWithoutMmap = false;
+
     // DLedger message store config
     private boolean enableDLegerCommitLog = false;
     private String dLegerGroup;
@@ -275,6 +287,13 @@ public class MessageStoreConfig {
      * Enable this config to resolve this issue. https://github.com/apache/rocketmq/issues/5568
      */
     private boolean autoMessageVersionOnTopicLen = true;
+
+    /**
+     * Whether to use runningFlags when flushing data to disk.
+     * When disabled, runningFlags will be set to null during MappedFileQueue and MappedFile initialization.
+     */
+    @ImportantField
+    private boolean enableRunningFlagsInFlush = false;
 
     /**
      * It cannot be changed after the broker is started.
@@ -464,6 +483,16 @@ public class MessageStoreConfig {
     private int rocksdbFlushWalFrequency = 1024;
 
     private long rocksdbWalFileRollingThreshold = SizeUnit.GB;
+
+    /**
+     * Note: For correctness, this switch should be enabled only if the previous startup was configured with SYNC_FLUSH
+     * and the storeType was defaultRocksDB. This switch is not recommended for normal use cases (include master-slave
+     * or controller mode).
+     */
+    private boolean enableAcceleratedRecovery = false;
+
+    // Shared byte buffer manager configuration
+    private int sharedByteBufferNum = 16;
 
     public String getRocksdbCompressionType() {
         return rocksdbCompressionType;
@@ -1141,6 +1170,14 @@ public class MessageStoreConfig {
         this.transientStorePoolEnable = transientStorePoolEnable;
     }
 
+    public boolean isWriteWithoutMmap() {
+        return writeWithoutMmap;
+    }
+
+    public void setWriteWithoutMmap(final boolean writeWithoutMmap) {
+        this.writeWithoutMmap = writeWithoutMmap;
+    }
+
     public int getTransientStorePoolSize() {
         return transientStorePoolSize;
     }
@@ -1724,6 +1761,14 @@ public class MessageStoreConfig {
         return timerWarmEnable;
     }
 
+    public boolean isTimerWheelSnapshotFlush() {
+        return timerWheelSnapshotFlush;
+    }
+
+    public void setTimerWheelSnapshotFlush(boolean timerWheelSnapshotFlush) {
+        this.timerWheelSnapshotFlush = timerWheelSnapshotFlush;
+    }
+
     public boolean isTimerWheelEnable() {
         return timerWheelEnable;
     }
@@ -1767,6 +1812,14 @@ public class MessageStoreConfig {
 
     public int getTimerProgressLogIntervalMs() {
         return timerProgressLogIntervalMs;
+    }
+
+    public int getTimerWheelSnapshotIntervalMs() {
+        return timerWheelSnapshotIntervalMs;
+    }
+
+    public void setTimerWheelSnapshotIntervalMs(int timerWheelSnapshotIntervalMs) {
+        this.timerWheelSnapshotIntervalMs = timerWheelSnapshotIntervalMs;
     }
 
     public void setTimerProgressLogIntervalMs(final int timerProgressLogIntervalMs) {
@@ -2017,7 +2070,32 @@ public class MessageStoreConfig {
         return enableLogConsumeQueueRepeatedlyBuildWhenRecover;
     }
 
-    public void setEnableLogConsumeQueueRepeatedlyBuildWhenRecover(boolean enableLogConsumeQueueRepeatedlyBuildWhenRecover) {
+    public void setEnableLogConsumeQueueRepeatedlyBuildWhenRecover(
+        boolean enableLogConsumeQueueRepeatedlyBuildWhenRecover) {
         this.enableLogConsumeQueueRepeatedlyBuildWhenRecover = enableLogConsumeQueueRepeatedlyBuildWhenRecover;
+    }
+
+    public boolean isEnableAcceleratedRecovery() {
+        return enableAcceleratedRecovery;
+    }
+
+    public void setEnableAcceleratedRecovery(boolean enableAcceleratedRecovery) {
+        this.enableAcceleratedRecovery = enableAcceleratedRecovery;
+    }
+
+    public boolean isEnableRunningFlagsInFlush() {
+        return enableRunningFlagsInFlush;
+    }
+
+    public void setEnableRunningFlagsInFlush(boolean enableRunningFlagsInFlush) {
+        this.enableRunningFlagsInFlush = enableRunningFlagsInFlush;
+    }
+
+    public int getSharedByteBufferNum() {
+        return sharedByteBufferNum;
+    }
+
+    public void setSharedByteBufferNum(int sharedByteBufferNum) {
+        this.sharedByteBufferNum = sharedByteBufferNum;
     }
 }
