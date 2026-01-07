@@ -240,13 +240,20 @@ public class BrokerConfig extends BrokerIdentity {
     private boolean retrieveMessageFromPopRetryTopicV1 = true;
     private boolean enableRetryTopicV2 = false;
     private int popFromRetryProbability = 20;
+    // pop retry probability for priority mode
+    private int popFromRetryProbabilityForPriority = 0;
+    // 0 as the lowest priority if true
+    private boolean priorityOrderAsc = true;
     private boolean popConsumerFSServiceInit = true;
     private boolean popConsumerKVServiceLog = false;
     private boolean popConsumerKVServiceInit = false;
     private boolean popConsumerKVServiceEnable = false;
     private int popReviveMaxReturnSizePerRead = 16 * 1024;
+    private int popReviveConcurrency = 32;
     private int popReviveMaxAttemptTimes = 16;
-
+    private boolean popReviveSkipIfGroupAbsent = true;
+    // each message queue will have a corresponding retry queue
+    private boolean useSeparateRetryQueue = false;
     private boolean realTimeNotifyConsumerChange = true;
 
     private boolean litePullMessageEnable = true;
@@ -669,6 +676,14 @@ public class BrokerConfig extends BrokerIdentity {
         this.popConsumerKVServiceEnable = popConsumerKVServiceEnable;
     }
 
+    public int getPopReviveConcurrency() {
+        return popReviveConcurrency;
+    }
+
+    public void setPopReviveConcurrency(int popReviveConcurrency) {
+        this.popReviveConcurrency = popReviveConcurrency;
+    }
+
     public int getPopReviveMaxReturnSizePerRead() {
         return popReviveMaxReturnSizePerRead;
     }
@@ -683,6 +698,14 @@ public class BrokerConfig extends BrokerIdentity {
 
     public void setPopReviveMaxAttemptTimes(int popReviveMaxAttemptTimes) {
         this.popReviveMaxAttemptTimes = popReviveMaxAttemptTimes;
+    }
+
+    public boolean isPopReviveSkipIfGroupAbsent() {
+        return popReviveSkipIfGroupAbsent;
+    }
+
+    public void setPopReviveSkipIfGroupAbsent(boolean popReviveSkipIfGroupAbsent) {
+        this.popReviveSkipIfGroupAbsent = popReviveSkipIfGroupAbsent;
     }
 
     public boolean isTraceOn() {
@@ -2176,5 +2199,29 @@ public class BrokerConfig extends BrokerIdentity {
 
     public void setSplitMetadataSize(int splitMetadataSize) {
         this.splitMetadataSize = splitMetadataSize;
+    }
+
+    public int getPopFromRetryProbabilityForPriority() {
+        return popFromRetryProbabilityForPriority;
+    }
+
+    public void setPopFromRetryProbabilityForPriority(int popFromRetryProbabilityForPriority) {
+        this.popFromRetryProbabilityForPriority = popFromRetryProbabilityForPriority;
+    }
+
+    public boolean isPriorityOrderAsc() {
+        return priorityOrderAsc;
+    }
+
+    public void setPriorityOrderAsc(boolean priorityOrderAsc) {
+        this.priorityOrderAsc = priorityOrderAsc;
+    }
+
+    public boolean isUseSeparateRetryQueue() {
+        return useSeparateRetryQueue;
+    }
+
+    public void setUseSeparateRetryQueue(boolean useSeparateRetryQueue) {
+        this.useSeparateRetryQueue = useSeparateRetryQueue;
     }
 }

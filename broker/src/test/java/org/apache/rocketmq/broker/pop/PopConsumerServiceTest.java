@@ -35,8 +35,9 @@ import org.apache.rocketmq.broker.BrokerController;
 import org.apache.rocketmq.broker.failover.EscapeBridge;
 import org.apache.rocketmq.broker.longpolling.PopLongPollingService;
 import org.apache.rocketmq.broker.offset.ConsumerOffsetManager;
-import org.apache.rocketmq.broker.offset.ConsumerOrderInfoManager;
+import org.apache.rocketmq.broker.pop.orderly.ConsumerOrderInfoManager;
 import org.apache.rocketmq.broker.processor.PopMessageProcessor;
+import org.apache.rocketmq.broker.subscription.SubscriptionGroupManager;
 import org.apache.rocketmq.broker.topic.TopicConfigManager;
 import org.apache.rocketmq.common.BrokerConfig;
 import org.apache.rocketmq.common.KeyBuilder;
@@ -93,6 +94,7 @@ public class PopConsumerServiceTest {
         messageStoreConfig.setStorePathRootDir(filePath);
 
         TopicConfigManager topicConfigManager = Mockito.mock(TopicConfigManager.class);
+        SubscriptionGroupManager subscriptionGroupManager = Mockito.mock(SubscriptionGroupManager.class);
         ConsumerOffsetManager consumerOffsetManager = Mockito.mock(ConsumerOffsetManager.class);
         PopMessageProcessor popMessageProcessor = Mockito.mock(PopMessageProcessor.class);
         PopLongPollingService popLongPollingService = Mockito.mock(PopLongPollingService.class);
@@ -101,6 +103,7 @@ public class PopConsumerServiceTest {
         brokerController = Mockito.mock(BrokerController.class);
         Mockito.when(brokerController.getBrokerConfig()).thenReturn(brokerConfig);
         Mockito.when(brokerController.getTopicConfigManager()).thenReturn(topicConfigManager);
+        Mockito.when(brokerController.getSubscriptionGroupManager()).thenReturn(subscriptionGroupManager);
         Mockito.when(brokerController.getMessageStoreConfig()).thenReturn(messageStoreConfig);
         Mockito.when(brokerController.getConsumerOffsetManager()).thenReturn(consumerOffsetManager);
         Mockito.when(brokerController.getPopMessageProcessor()).thenReturn(popMessageProcessor);
@@ -233,7 +236,7 @@ public class PopConsumerServiceTest {
         // fifo block
         PopConsumerContext context = new PopConsumerContext(
             clientHost, System.currentTimeMillis(), 20000, groupId, false, ConsumeInitMode.MIN, attemptId);
-        consumerService.setFifoBlocked(context, groupId, topicId, queueId, Collections.singletonList(100L));
+        consumerService.setFifoBlocked(context, groupId, topicId, queueId, Collections.singletonList(100L), resetGetMessageResult);
         Mockito.when(brokerController.getConsumerOrderInfoManager()
             .checkBlock(anyString(), anyString(), anyString(), anyInt(), anyLong())).thenReturn(true);
         Assert.assertTrue(consumerService.isFifoBlocked(context, groupId, topicId, queueId));
@@ -322,6 +325,18 @@ public class PopConsumerServiceTest {
     }
 
     @Test
+    public void reviveSkipIfGroupAbsent() {
+        String groupName = "PopGroupAbsent";
+        brokerController.getBrokerConfig().setPopReviveSkipIfGroupAbsent(true);
+        PopConsumerRecord record = Mockito.mock(PopConsumerRecord.class);
+        Mockito.when(record.getGroupId()).thenReturn(groupName);
+        Mockito.when(brokerController.getSubscriptionGroupManager()
+            .containsSubscriptionGroup(groupName)).thenReturn(false);
+        CompletableFuture<Boolean> result = consumerService.revive(record);
+        Assert.assertTrue(result.join());
+    }
+
+    @Test
     public void reviveRetryTest() {
         Mockito.when(brokerController.getTopicConfigManager().selectTopicConfig(topicId)).thenReturn(null);
         Mockito.when(brokerController.getConsumerOffsetManager().queryOffset(groupId, topicId, 0)).thenReturn(-1L);
@@ -390,6 +405,8 @@ public class PopConsumerServiceTest {
     @Test
     public void reviveBackoffRetryTest() {
         Mockito.when(brokerController.getEscapeBridge()).thenReturn(Mockito.mock(EscapeBridge.class));
+        Mockito.when(brokerController.getSubscriptionGroupManager()
+            .containsSubscriptionGroup(anyString())).thenReturn(true);
         PopConsumerService consumerServiceSpy = Mockito.spy(consumerService);
 
         consumerService.getPopConsumerStore().start();

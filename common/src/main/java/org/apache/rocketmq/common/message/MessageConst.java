@@ -40,9 +40,11 @@ public class MessageConst {
     public static final String PROPERTY_MSG_REGION = "MSG_REGION";
     public static final String PROPERTY_TRACE_SWITCH = "TRACE_ON";
     public static final String PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX = "UNIQ_KEY";
+    public static final String PROPERTY_TRANS_OFFSET = "TRANS_OFFSET";
     public static final String PROPERTY_EXTEND_UNIQ_INFO = "EXTEND_UNIQ_INFO";
     public static final String PROPERTY_MAX_RECONSUME_TIMES = "MAX_RECONSUME_TIMES";
     public static final String PROPERTY_CONSUME_START_TIMESTAMP = "CONSUME_START_TIME";
+    public static final String PROPERTY_PRIORITY = "_SYS_MSG_PRIORITY_";
     public static final String PROPERTY_INNER_NUM = "INNER_NUM";
     public static final String PROPERTY_INNER_BASE = "INNER_BASE";
     public static final String DUP_INFO = "DUP_INFO";
@@ -89,6 +91,14 @@ public class MessageConst {
 
     public static final String KEY_SEPARATOR = " ";
 
+    public final static String INDEX_KEY_TYPE = "K";
+    public final static String INDEX_UNIQUE_TYPE = "U";
+    public final static String INDEX_TAG_TYPE = "T";
+
+    public final static String TIMER_ENGINE_TYPE = "E_T";
+    public final static String TIMER_ENGINE_ROCKSDB_TIMELINE = "R";
+    public final static String TIMER_ENGINE_FILE_TIME_WHEEL = "F";
+
     public static final HashSet<String> STRING_HASH_SET = new HashSet<>(64);
 
     public static final String PROPERTY_TIMER_ENQUEUE_MS = "TIMER_ENQUEUE_MS";
@@ -96,6 +106,7 @@ public class MessageConst {
     public static final String PROPERTY_TIMER_ROLL_TIMES = "TIMER_ROLL_TIMES";
     public static final String PROPERTY_TIMER_OUT_MS = "TIMER_OUT_MS";
     public static final String PROPERTY_TIMER_DEL_UNIQKEY = "TIMER_DEL_UNIQKEY";
+    public static final String PROPERTY_TIMER_ROLL_LABEL = "TIMER_ROLL_LABEL";
     public static final String PROPERTY_TIMER_DELAY_LEVEL = "TIMER_DELAY_LEVEL";
     public static final String PROPERTY_TIMER_DELAY_MS = "TIMER_DELAY_MS";
     public static final String PROPERTY_CRC32 = "__CRC32#";
@@ -159,5 +170,6 @@ public class MessageConst {
         STRING_HASH_SET.add(PROPERTY_DLQ_ORIGIN_TOPIC);
         STRING_HASH_SET.add(PROPERTY_DLQ_ORIGIN_MESSAGE_ID);
         STRING_HASH_SET.add(PROPERTY_CRC32);
+        STRING_HASH_SET.add(PROPERTY_PRIORITY);
     }
 }
